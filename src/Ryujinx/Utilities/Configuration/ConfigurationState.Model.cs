@@ -1,5 +1,6 @@
 using ARMeilleure;
 using Gommon;
+using Ryujinx.Ava.Utilities.AppLibrary;
 using Ryujinx.Ava.Utilities.Configuration.System;
 using Ryujinx.Ava.Utilities.Configuration.UI;
 using Ryujinx.Common;
@@ -383,7 +384,7 @@ namespace Ryujinx.Ava.Utilities.Configuration
             /// <summary>
             ///  Ignore Controller Applet
             /// </summary>
-            public ReactiveObject<bool> IgnoreApplet { get; private set; }
+            public ReactiveObject<bool> IgnoreControllerApplet { get; private set; }
 
             /// <summary>
             /// Uses Hypervisor over JIT if available
@@ -424,8 +425,8 @@ namespace Ryujinx.Ava.Utilities.Configuration
                 DramSize.LogChangesToValue(nameof(DramSize));
                 IgnoreMissingServices = new ReactiveObject<bool>();
                 IgnoreMissingServices.LogChangesToValue(nameof(IgnoreMissingServices));
-                IgnoreApplet = new ReactiveObject<bool>();
-                IgnoreApplet.LogChangesToValue(nameof(IgnoreApplet));
+                IgnoreControllerApplet = new ReactiveObject<bool>();
+                IgnoreControllerApplet.LogChangesToValue(nameof(IgnoreControllerApplet));
                 AudioVolume = new ReactiveObject<float>();
                 AudioVolume.LogChangesToValue(nameof(AudioVolume));
                 UseHypervisor = new ReactiveObject<bool>();
@@ -447,6 +448,11 @@ namespace Ryujinx.Ava.Utilities.Configuration
             /// Enable or disable mouse support (Independent from controllers binding)
             /// </summary>
             public ReactiveObject<bool> EnableMouse { get; private set; }
+            
+            /// <summary>
+            /// Enable/disable the ability to control Ryujinx when it's not the currently focused window.
+            /// </summary>
+            public ReactiveObject<bool> DisableInputWhenOutOfFocus { get; private set; }
 
             /// <summary>
             /// Hotkey Keyboard Bindings
@@ -469,6 +475,7 @@ namespace Ryujinx.Ava.Utilities.Configuration
             {
                 EnableKeyboard = new ReactiveObject<bool>();
                 EnableMouse = new ReactiveObject<bool>();
+                DisableInputWhenOutOfFocus = new ReactiveObject<bool>();
                 Hotkeys = new ReactiveObject<KeyboardHotkeys>();
                 InputConfig = new ReactiveObject<List<InputConfig>>();
                 RainbowSpeed = new ReactiveObject<float>();
@@ -641,6 +648,14 @@ namespace Ryujinx.Ava.Utilities.Configuration
             /// </summary>
             public ReactiveObject<string> LdnServer { get; private set; }
 
+            public string GetLdnServer()
+            {
+                string ldnServer = LdnServer;
+                return string.IsNullOrEmpty(ldnServer) 
+                    ? SharedConstants.DefaultLanPlayHost 
+                    : ldnServer;
+            }
+
             public MultiplayerSection()
             {
                 LanInterfaceId = new ReactiveObject<string>();
@@ -773,6 +788,11 @@ namespace Ryujinx.Ava.Utilities.Configuration
         /// Checks for updates when Ryujinx starts when enabled, either prompting when an update is found or just showing a notification.
         /// </summary>
         public ReactiveObject<UpdaterType> UpdateCheckerType { get; private set; }
+        
+        /// <summary>
+        /// How the emulator should behave when you click off/on the window.
+        /// </summary>
+        public ReactiveObject<FocusLostType> FocusLostActionType { get; private set; }
 
         /// <summary>
         /// Show "Confirm Exit" Dialog
@@ -811,6 +831,7 @@ namespace Ryujinx.Ava.Utilities.Configuration
             EnableDiscordIntegration = new ReactiveObject<bool>();
             CheckUpdatesOnStart = new ReactiveObject<bool>();
             UpdateCheckerType = new ReactiveObject<UpdaterType>();
+            FocusLostActionType = new ReactiveObject<FocusLostType>();
             ShowConfirmExit = new ReactiveObject<bool>();
             RememberWindowState = new ReactiveObject<bool>();
             ShowTitleBar = new ReactiveObject<bool>();

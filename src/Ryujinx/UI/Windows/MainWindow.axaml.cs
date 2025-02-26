@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform;
 using Avalonia.Threading;
@@ -138,8 +139,24 @@ namespace Ryujinx.Ava.UI.Windows
             base.OnApplyTemplate(e);
 
             NotificationHelper.SetNotificationManager(this);
-
-            Executor.ExecuteBackgroundAsync(ShowIntelMacWarningAsync);
+            
+            Executor.ExecuteBackgroundAsync(async () =>
+            {
+                await ShowIntelMacWarningAsync();
+                FilePath firmwarePath = CommandLineState.FirmwareToInstallPathArg;
+                if (firmwarePath is not null)
+                {
+                    if ((firmwarePath.ExistsAsFile && firmwarePath.Extension is "xci" or "zip") ||
+                        firmwarePath.ExistsAsDirectory)
+                    {
+                        await Dispatcher.UIThread.InvokeAsync(() => 
+                            ViewModel.HandleFirmwareInstallation(firmwarePath));
+                        CommandLineState.FirmwareToInstallPathArg = null;
+                    }
+                    else
+                        Logger.Notice.Print(LogClass.UI, "Invalid firmware type provided. Path must be a directory, or a .zip or .xci file.");
+                }
+            });
         }
 
         private void OnScalingChanged(object sender, EventArgs e)
@@ -172,17 +189,12 @@ namespace Ryujinx.Ava.UI.Windows
         {
             Dispatcher.UIThread.Post(() =>
             {
-                List<LdnGameData> ldnGameDataArray = e.LdnData.ToList();
                 ViewModel.LdnData.Clear();
                 foreach (ApplicationData application in ViewModel.Applications.Where(it => it.HasControlHolder))
                 {
                     ref ApplicationControlProperty controlHolder = ref application.ControlHolder.Value;
-                    
-                    ViewModel.LdnData[application.IdString] = 
-                        LdnGameData.GetArrayForApp(
-                            ldnGameDataArray, 
-                            ref controlHolder
-                        );
+
+                    ViewModel.LdnData[application.IdString] = e.LdnData.Where(ref controlHolder);
                     
                     UpdateApplicationWithLdnData(application);
                 }
@@ -222,7 +234,7 @@ namespace Ryujinx.Ava.UI.Windows
             _deferLoad = true;
             _launchPath = launchPathArg;
             _launchApplicationId = launchApplicationId;
-            _startFullscreen = startFullscreenArg;
+            _startFullscreen = startFullscreenArg;          
         }
 
         public void SwitchToGameControl(bool startFullscreen = false)
@@ -373,6 +385,7 @@ namespace Ryujinx.Ava.UI.Windows
 
                             if (applicationData != null)
                             {
+                                ViewModel.SelectedApplication = applicationData;
                                 await ViewModel.LoadApplication(applicationData, _startFullscreen);
                             }
                             else
@@ -384,6 +397,7 @@ namespace Ryujinx.Ava.UI.Windows
                         else
                         {
                             applicationData = applications[0];
+                            ViewModel.SelectedApplication = applicationData;
                             await ViewModel.LoadApplication(applicationData, _startFullscreen);
                         }
                     }
@@ -413,15 +427,7 @@ namespace Ryujinx.Ava.UI.Windows
                 case UpdaterType.CheckInBackground:
                     if ((await Updater.CheckVersionAsync()).TryGet(out (Version Current, Version Incoming) versions))
                     {
-                        string newVersionString = ReleaseInformation.IsCanaryBuild
-                            ? $"Canary {versions.Current} -> Canary {versions.Incoming}"
-                            : $"{versions.Current} -> {versions.Incoming}";
-                    
-                        if (versions.Current < versions.Incoming)
-                            NotificationHelper.ShowInformation(
-                                title: "Update Available",
-                                text: newVersionString,
-                                onClick: () => _ = Updater.BeginUpdateAsync());
+                        Dispatcher.UIThread.Post(() => RyujinxApp.MainWindow.ViewModel.UpdateAvailable = versions.Current < versions.Incoming);
                     }
                     break;
             }
@@ -768,6 +774,120 @@ namespace Ryujinx.Ava.UI.Windows
                 "Intel Macs are not supported and will not work properly.\nIf you continue, do not come to our Discord asking for support;\nand do not report bugs on the GitHub. They will be closed."));
 
             _intelMacWarningShown = true;
+        }
+        
+        private void InputElement_OnGotFocus(object sender, GotFocusEventArgs e)
+        {
+            if (ViewModel.AppHost is null) return;
+            
+            if (!_focusLoss.Active) 
+                return;
+
+            switch (_focusLoss.Type)
+            {
+                case FocusLostType.BlockInput:
+                    {
+                        if (!ViewModel.AppHost.NpadManager.InputUpdatesBlocked)
+                        {
+                            _focusLoss = default;
+                            return;
+                        }
+
+                        ViewModel.AppHost.NpadManager.UnblockInputUpdates();
+                        _focusLoss = default;
+                        break;
+                    }
+                case FocusLostType.MuteAudio:
+                    {
+                        if (!ViewModel.AppHost.Device.IsAudioMuted())
+                        {
+                            _focusLoss = default;
+                            return;
+                        }
+                        
+                        ViewModel.AppHost.Device.SetVolume(ViewModel.VolumeBeforeMute);
+                        
+                        _focusLoss = default;
+                        break;
+                    }
+                case FocusLostType.BlockInputAndMuteAudio:
+                    {
+                        if (!ViewModel.AppHost.Device.IsAudioMuted())
+                            goto case FocusLostType.BlockInput;
+                        
+                        ViewModel.AppHost.Device.SetVolume(ViewModel.VolumeBeforeMute);
+                        ViewModel.AppHost.NpadManager.UnblockInputUpdates();
+                        
+                        _focusLoss = default;
+                        break;
+                    }
+                case FocusLostType.PauseEmulation:
+                    {
+                        if (!ViewModel.AppHost.Device.System.IsPaused)
+                        {
+                            _focusLoss = default;
+                            return;
+                        }
+                        
+                        ViewModel.AppHost.Resume();
+                        
+                        _focusLoss = default;
+                        break;
+                    }
+            }
+        }
+        
+        private (FocusLostType Type, bool Active) _focusLoss;
+
+        private void InputElement_OnLostFocus(object sender, RoutedEventArgs e)
+        {
+            if (ConfigurationState.Instance.FocusLostActionType.Value is FocusLostType.DoNothing)
+                return;
+
+            if (ViewModel.AppHost is null) return;
+
+            switch (ConfigurationState.Instance.FocusLostActionType.Value)
+            {
+                case FocusLostType.BlockInput:
+                    {
+                        if (ViewModel.AppHost.NpadManager.InputUpdatesBlocked)
+                            return;
+            
+                        ViewModel.AppHost.NpadManager.BlockInputUpdates();
+                        _focusLoss = (FocusLostType.BlockInput, ViewModel.AppHost.NpadManager.InputUpdatesBlocked);
+                        break;
+                    }
+                case FocusLostType.MuteAudio:
+                    {
+                        if (ViewModel.AppHost.Device.GetVolume() is 0)
+                            return;
+
+                        ViewModel.VolumeBeforeMute = ViewModel.AppHost.Device.GetVolume();
+                        ViewModel.AppHost.Device.SetVolume(0);
+                        _focusLoss = (FocusLostType.MuteAudio, ViewModel.AppHost.Device.GetVolume() is 0f);
+                        break;
+                    }
+                case FocusLostType.BlockInputAndMuteAudio:
+                    {
+                        if (ViewModel.AppHost.Device.GetVolume() is 0)
+                            goto case FocusLostType.BlockInput;
+
+                        ViewModel.VolumeBeforeMute = ViewModel.AppHost.Device.GetVolume();
+                        ViewModel.AppHost.Device.SetVolume(0);
+                        ViewModel.AppHost.NpadManager.BlockInputUpdates();
+                        _focusLoss = (FocusLostType.BlockInputAndMuteAudio, ViewModel.AppHost.Device.GetVolume() is 0f && ViewModel.AppHost.NpadManager.InputUpdatesBlocked);
+                        break;
+                    }
+                case FocusLostType.PauseEmulation:
+                    {
+                        if (ViewModel.AppHost.Device.System.IsPaused)
+                            return;
+                        
+                        ViewModel.AppHost.Pause();
+                        _focusLoss = (FocusLostType.PauseEmulation, ViewModel.AppHost.Device.System.IsPaused);
+                        break;
+                    }
+            }
         }
     }
 }
